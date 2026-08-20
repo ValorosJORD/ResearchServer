@@ -1,0 +1,29 @@
+{
+  "files": [
+    "sync-manifest.json",
+    "scripts/sync.ts",
+    "package.json",
+    "tsconfig.json",
+    ".editorconfig",
+    ".env.example",
+    ".gitattributes",
+    ".prettierrc",
+    "src/config.ts",
+    "src/dataSource.ts",
+    "src/sessionConfig.ts",
+    "src/types/utils.d.ts",
+    "src/utils/db-utils.ts",
+    "client/svelte.config.js",
+    "client/vite.config.ts",
+    "client/tsconfig.json",
+    "client/.gitignore",
+    "client/src/lib/api.ts",
+    "client/src/lib/auth.svelte.ts",
+    "client/src/lib/toast.svelte.ts",
+    "client/src/lib/upload.ts",
+    "client/src/lib/components/FileUpload.svelte",
+    "client/src/lib/components/Loading.svelte",
+    "client/src/lib/components/Modal.svelte",
+    "client/src/lib/components/Toast.svelte"
+  ]
+}
