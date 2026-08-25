@@ -25,6 +25,11 @@ import {
 const app: Express = express();
 const PORT = process.env.PORT ?? 3000;
 
+// Required behind a reverse proxy (nginx) for secure cookies and
+// req.secure to work correctly — without this, Express sees all traffic
+// as plain HTTP regardless of what the client actually connected with.
+app.set('trust proxy', 1);
+
 // -- Core middleware -----------------------------------------
 app.use(sessionMiddleware);
 app.use(express.json());
