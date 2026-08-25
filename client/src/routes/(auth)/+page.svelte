@@ -60,6 +60,4 @@
       {submitting ? 'Logging in...' : 'Log In'}
     </button>
   </form>
-
-  <p>Don't have an account? <a href="/register">Register</a></p>
 </article>

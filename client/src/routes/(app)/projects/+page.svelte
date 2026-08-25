@@ -95,14 +95,13 @@
 </Modal>
 
 <article style="max-width: fit-content; margin-inline: auto;">
-  <h3>Interested in creating a project?</h3>
-  <button onclick={() => (isOpen = true)}>Create your own project now!</button>
+  <button onclick={() => (isOpen = true)}>Create Project</button>
 </article>
 
 {#if loading}
   <loading></loading>
 {:else if projects.length === 0}
-  <p>No Projects</p>
+  <h1>No Projects</h1>
 {:else}
   <ul>
     {#each projects as project (project.projectId)}

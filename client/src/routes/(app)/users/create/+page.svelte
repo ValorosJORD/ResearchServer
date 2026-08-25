@@ -72,11 +72,8 @@
   {:else}
     <article>
       <hgroup>
-        <h1>Invite a new user</h1>
-        <p>
-          They'll get an email with a link to set up their account. This is the only way new
-          accounts get created.
-        </p>
+        <h1>Invite New User</h1>
+        <p>Sends Invite Email</p>
       </hgroup>
 
       <form on:submit|preventDefault={handleSubmit}>
