@@ -2,6 +2,7 @@ import { AppDataSource } from '../dataSource.js';
 import { Project } from '../entities/Project.js';
 import { ProjectFile } from '../entities/ProjectFile.js';
 import { User } from '../entities/User.js';
+import { FileEncryptionMeta } from '../services/FileEncryption.js';
 
 const projectRepository = AppDataSource.getRepository(Project);
 const projectFileRepository = AppDataSource.getRepository(ProjectFile);
@@ -58,6 +59,7 @@ interface NewProjectFileInput {
   fileSize: number;
   originalName: string;
   mimeType: string;
+  encryption: FileEncryptionMeta;
 }
 
 /**
@@ -84,6 +86,7 @@ export async function addFilesToProject(
       projectFile.fileSize = f.fileSize;
       projectFile.originalName = f.originalName;
       projectFile.mimeType = f.mimeType;
+      projectFile.encryption = f.encryption;
       return projectFile;
     });
 

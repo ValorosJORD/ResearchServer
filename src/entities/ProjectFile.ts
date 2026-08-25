@@ -10,6 +10,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { v7 as uuidv7 } from 'uuid';
+import { FileEncryptionMeta } from '../services/FileEncryption.js';
 import { Project } from './Project.js';
 
 @Entity()
@@ -22,8 +23,8 @@ export class ProjectFile {
     this.fileId = uuidv7();
   }
 
-  // Relative path on disk, e.g. uploads/projects/<uuid>.ext. Unique but no
-  // longer the primary key — lookups go through fileId instead.
+  // Relative path on disk, e.g. uploads/projects/<uuid>.ext. Unique but
+  // not the primary key — lookups go through fileId instead.
   @Column({ unique: true })
   filePath: string;
 
@@ -35,6 +36,12 @@ export class ProjectFile {
 
   @Column()
   mimeType: string;
+
+  // Nullable: files uploaded before this feature existed have no
+  // encryption metadata and are served as plaintext (see AccessFile's
+  // fallback). Every new upload always populates this.
+  @Column({ type: 'jsonb', nullable: true })
+  encryption: FileEncryptionMeta | null;
 
   @CreateDateColumn()
   createdAt: Date;

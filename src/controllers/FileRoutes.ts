@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { deleteProjectFile, getFileById, getFilesByProject } from '../models/FileModel.js';
 import { isProjectMember } from '../models/ProjectModel.js';
+import { decryptFile } from '../services/FileEncryption.js';
 import { UPLOAD_ROOT } from '../uploadConfig.js';
 import { parseDatabaseError } from '../utils/db-utils.js';
 import { FileIdParamSchema, ProjectIdParamSchema } from '../validators/FileValidator.js';
@@ -74,16 +75,36 @@ export async function AccessFile(req: Request, res: Response): Promise<void> {
     // regardless of the server process's current working directory.
     const absolutePath = path.join(UPLOAD_ROOT, file.filePath);
 
+    let raw: Buffer;
     try {
-      await fs.access(absolutePath);
+      raw = await fs.readFile(absolutePath);
     } catch {
       res.status(404).json('File not found on disk');
       return;
     }
 
-    // res.download sets Content-Disposition using the original filename,
-    // rather than leaking the on-disk uuid-based name to the client.
-    res.download(absolutePath, file.originalName);
+    let plaintext: Buffer;
+    try {
+      // Files uploaded before encryption existed have no metadata and are
+      // served as-is. Every file uploaded since always has encryption set.
+      plaintext = file.encryption ? decryptFile(raw, file.encryption) : raw;
+    } catch (err) {
+      console.error(`Failed to decrypt file ${file.fileId}:`, err);
+      res.status(500).json('This file could not be decrypted — it may be corrupted.');
+      return;
+    }
+
+    // res.download only works with file paths, not in-memory buffers, so
+    // headers are set manually here instead. filename* provides the
+    // correctly-encoded name for non-ASCII filenames; plain filename is a
+    // fallback for older clients that don't understand filename*.
+    const safeName = file.originalName.replace(/"/g, '');
+    res.set('Content-Type', file.mimeType || 'application/octet-stream');
+    res.set(
+      'Content-Disposition',
+      `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(file.originalName)}`,
+    );
+    res.send(plaintext);
   } catch (err) {
     console.error(err);
     const databaseErrorMessage = parseDatabaseError(err);

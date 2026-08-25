@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import fs from 'fs/promises';
 import path from 'path';
+import { v7 as uuidv7 } from 'uuid';
 import {
   addFilesToProject,
   addProject,
@@ -11,7 +12,8 @@ import {
   isProjectMember,
 } from '../models/ProjectModel.js';
 import { getUserByEmail, getUserById } from '../models/UserModel.js';
-import { UPLOAD_ROOT } from '../uploadConfig.js';
+import { encryptFile } from '../services/FileEncryption.js';
+import { PROJECT_DIR, UPLOAD_ROOT } from '../uploadConfig.js';
 import { parseDatabaseError } from '../utils/db-utils.js';
 import {
   AddProjectUserSchema,
@@ -21,8 +23,8 @@ import {
 } from '../validators/ProjectValidator.js';
 import { UserIdSchema } from '../validators/authValidator.js';
 
-async function cleanupOrphanedUploads(files: Express.Multer.File[]): Promise<void> {
-  await Promise.all(files.map((f) => fs.unlink(f.path).catch(() => {})));
+async function cleanupWrittenFiles(absolutePaths: string[]): Promise<void> {
+  await Promise.all(absolutePaths.map((p) => fs.unlink(p).catch(() => {})));
 }
 
 export async function CreateProject(req: Request, res: Response): Promise<void> {
@@ -156,21 +158,21 @@ export async function ProjectFileUpload(req: Request, res: Response): Promise<vo
   }
 
   if (!req.session.isLoggedIn) {
-    await cleanupOrphanedUploads(files);
+    // Nothing was ever written to disk (memoryStorage), so there's
+    // nothing to clean up here — unlike before, an unauthorized request
+    // never touches the filesystem at all.
     res.sendStatus(401);
     return;
   }
 
   const paramsResult = ProjectIdSchema.safeParse(req.params);
   if (!paramsResult.success) {
-    await cleanupOrphanedUploads(files);
     res.status(400).json(paramsResult.error.flatten());
     return;
   }
 
   const bodyResult = FileBodySchema.safeParse(req.body);
   if (!bodyResult.success) {
-    await cleanupOrphanedUploads(files);
     res.status(400).json(bodyResult.error.flatten());
     return;
   }
@@ -178,31 +180,44 @@ export async function ProjectFileUpload(req: Request, res: Response): Promise<vo
   const { projectId } = paramsResult.data;
   const { userId, role } = req.session.authenticatedUser;
 
-  try {
-    const isMember = await isProjectMember(projectId, userId);
-    if (!isMember && role !== 'ADMIN') {
-      await cleanupOrphanedUploads(files);
-      res.sendStatus(403);
-      return;
-    }
+  const isMember = await isProjectMember(projectId, userId);
+  if (!isMember && role !== 'ADMIN') {
+    res.sendStatus(403);
+    return;
+  }
 
-    const uploadResults = await addFilesToProject(
-      projectId,
-      files.map((file) => ({
-        // Store relative to UPLOAD_ROOT, not the absolute path multer
-        // reports — the absolute path is machine-specific and breaks the
-        // moment this runs from a different cwd, machine, or container.
-        filePath: path.relative(UPLOAD_ROOT, file.path),
-        fileSize: file.size,
-        originalName: file.originalname,
-        mimeType: file.mimetype,
-      })),
+  // Only past this point do we actually encrypt anything and write to
+  // disk — every rejection above happens with zero filesystem writes.
+  const writtenPaths: string[] = [];
+
+  try {
+    const fileInputs = await Promise.all(
+      files.map(async (file) => {
+        const { ciphertext, meta } = encryptFile(file.buffer);
+
+        const ext = path.extname(file.originalname).toLowerCase();
+        const diskFilename = `${uuidv7()}${ext}`;
+        const absolutePath = path.join(PROJECT_DIR, diskFilename);
+
+        await fs.writeFile(absolutePath, ciphertext);
+        writtenPaths.push(absolutePath);
+
+        return {
+          filePath: path.relative(UPLOAD_ROOT, absolutePath),
+          fileSize: file.size,
+          originalName: file.originalname,
+          mimeType: file.mimetype,
+          encryption: meta,
+        };
+      }),
     );
+
+    const uploadResults = await addFilesToProject(projectId, fileInputs);
 
     if (!uploadResults) {
       // Project didn't exist — addFilesToProject rolled back the
       // transaction, so there's nothing in the DB to clean up, only disk.
-      await cleanupOrphanedUploads(files);
+      await cleanupWrittenFiles(writtenPaths);
       res.status(404).json('Project not found');
       return;
     }
@@ -213,7 +228,7 @@ export async function ProjectFileUpload(req: Request, res: Response): Promise<vo
     // Safe to blanket-delete here even on partial success, since
     // addFilesToProject is transactional — either every file made it into
     // the DB or none did.
-    await cleanupOrphanedUploads(files);
+    await cleanupWrittenFiles(writtenPaths);
     res.sendStatus(500);
   }
 }
