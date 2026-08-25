@@ -16,8 +16,15 @@ class AuthStore {
     this.loading = true;
     try {
       const res = await api.get<User>('/me');
-      this.user = res.data;
-    } catch {
+      // res.ok is false for a 401 (not logged in) — that's a normal,
+      // expected outcome on public pages, not an error. api.get never
+      // throws for it, so without this check res.data (undefined, since
+      // a 401 has no JSON body) would get assigned directly to user
+      // instead of null, breaking the `user !== null` check isLoggedIn
+      // relies on.
+      this.user = res.ok ? (res.data ?? null) : null;
+    } catch (err) {
+      console.error('auth.refresh failed:', err);
       this.user = null;
     } finally {
       this.loading = false;

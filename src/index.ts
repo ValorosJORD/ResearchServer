@@ -80,13 +80,18 @@ app.delete('/api/files/:fileId', DeleteFile);
 const authPath = express.Router();
 authPath.use(requireAuth);
 
-authPath.post('/api/projects', CreateProject);
-authPath.get('/api/projects/:projectId', AccessProject);
-authPath.post('/api/projects/:projectId/users', AddProjectUser);
-authPath.get('/api/users/:userId/projects', accessUserProjects);
-authPath.post('/api/users/:userId/delete', RemoveUserAccount);
+authPath.post('/projects', CreateProject);
+authPath.get('/projects/:projectId', AccessProject);
+authPath.post('/projects/:projectId/users', AddProjectUser);
+authPath.get('/users/:userId/projects', accessUserProjects);
+authPath.post('/users/:userId/delete', RemoveUserAccount);
 
-app.use(authPath);
+// Mounting at '/api' (not '/') means requests to page routes like
+// /accept-invite never reach this router — or requireAuth — at all. Before
+// this, app.use(authPath) mounted at root caught every request site-wide,
+// so an unauthenticated page load (not just an API call) was getting
+// rejected with a raw 401 before ever reaching the SPA fallback below.
+app.use('/api', authPath);
 
 // -- SPA fallback ----------------------------------------------
 // Keep these LAST, after every `/api/*` route above.
