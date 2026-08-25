@@ -18,6 +18,7 @@
 
     if (result.status === 400) {
       toast.error('Email must be valid format and password must be at least 8 characters');
+      return;
     }
 
     if (result.status === 403) {
@@ -34,7 +35,6 @@
       return;
     }
 
-    auth.setUser(auth.user);
     await auth.refresh();
 
     toast.show(`${auth.user?.email} logged in.`);
