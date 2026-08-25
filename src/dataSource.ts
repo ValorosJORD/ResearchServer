@@ -1,7 +1,10 @@
+import 'dotenv/config';
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
 
 const requiredEnvVars = ['DB_HOST', 'DB_PORT', 'DB_USERNAME', 'DB_NAME'] as const;
+
+console.log(process.env.DB_HOST);
 
 for (const varName of requiredEnvVars) {
   if (!process.env[varName]) {

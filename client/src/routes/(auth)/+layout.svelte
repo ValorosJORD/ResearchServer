@@ -1,6 +1,6 @@
 <script lang="ts">
-  import '../app.css';
   import Toast from '$lib/components/Toast.svelte';
+  import '../../app.css';
 
   let { children } = $props();
 </script>
@@ -9,3 +9,6 @@
   {@render children()}
 </main>
 <Toast />
+
+<style>
+</style>

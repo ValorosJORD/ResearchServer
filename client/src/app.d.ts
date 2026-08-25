@@ -1,10 +1,18 @@
 declare global {
   namespace App {
-    // interface Error {}
-    // interface Locals {}
-    // interface PageData {}
-    // interface PageState {}
-    // interface Platform {}
+    interface Locals {
+      auth: {
+        isLoggedIn: boolean;
+        user?: {
+          userId: string;
+          email: string;
+          username: string;
+          name: string;
+          role: `BANNED` | `AUTHORIZED` | `ADMIN`;
+        };
+      };
+      requestId: string;
+    }
   }
 }
 
