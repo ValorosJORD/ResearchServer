@@ -5,6 +5,7 @@
   // adjust to wherever your api client actually lives
   import FileUpload from '$lib/components/FileUpload.svelte';
   import Modal from '$lib/components/Modal.svelte';
+  // adjust to wherever your modal component lives
   import { toast } from '$lib/toast.svelte';
   import { formatBytes, uploadFiles, type UploadError } from '$lib/upload';
 
@@ -21,6 +22,11 @@
     originalName: string;
     mimeType: string;
     createdAt: string;
+    classification: {
+      predictedLabel: string;
+      confidence: number;
+      perClass: Record<string, number>;
+    } | null;
   }
 
   type ErrorBody =
@@ -28,6 +34,7 @@
     | { formErrors: string[]; fieldErrors: Record<string, string[] | undefined> };
 
   const MAX_FILE_SIZE = 512 * 1024 * 1024; // matches the server's multer limit
+  const ACCEPTED_TYPES = '.dex,.apk';
 
   let projectFiles = $state<ProjectFile[]>([]);
   let loadingFiles = $state(true);
@@ -128,6 +135,10 @@
         {
           fieldName: 'files', // must match uploadProjectFile.array('files') on the server
           onProgress: (percent) => {
+            // Only reflects the upload transfer itself — classification
+            // runs after the transfer completes, with no progress signal
+            // of its own, so the button switches to a static "waiting on
+            // classification" message once the transfer hits 100%.
             progress = percent;
           },
         },
@@ -135,7 +146,7 @@
 
       projectFiles = [...uploaded, ...projectFiles];
       selectedFiles = [];
-      toast.success(`Uploaded ${uploaded.length} file${uploaded.length === 1 ? '' : 's'}.`);
+      toast.success(`Classified ${uploaded[0].originalName}.`);
     } catch (err) {
       toast.error(extractUploadErrorMessage(err));
     } finally {
@@ -213,10 +224,11 @@
 
 <section>
   <h2>Files</h2>
+  <p><small>Only .dex and .apk files are accepted — each one is classified on upload.</small></p>
 
   <FileUpload
     bind:files={selectedFiles}
-    multiple
+    accept={ACCEPTED_TYPES}
     maxSize={MAX_FILE_SIZE}
     disabled={uploading}
     onError={handleDropzoneError}
@@ -224,9 +236,13 @@
 
   {#if selectedFiles.length > 0}
     <button type="button" onclick={handleUpload} disabled={uploading} aria-busy={uploading}>
-      {uploading
-        ? `Uploading ${progress}%`
-        : `Upload ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'}`}
+      {#if !uploading}
+        Upload &amp; classify
+      {:else if progress < 100}
+        Uploading {progress}%
+      {:else}
+        Running classification… this can take a few minutes
+      {/if}
     </button>
   {/if}
 
@@ -239,6 +255,7 @@
       <thead>
         <tr>
           <th scope="col">Name</th>
+          <th scope="col">Classification</th>
           <th scope="col">Size</th>
           <th scope="col">Uploaded</th>
           <th scope="col">Actions</th>
@@ -248,6 +265,15 @@
         {#each projectFiles as file (file.fileId)}
           <tr>
             <td>{file.originalName}</td>
+            <td>
+              {#if file.classification}
+                <strong>{file.classification.predictedLabel}</strong>
+                <br />
+                <small>{(file.classification.confidence * 100).toFixed(1)}% confidence</small>
+              {:else}
+                <small><em>Not classified (uploaded before this feature)</em></small>
+              {/if}
+            </td>
             <td>{formatBytes(file.fileSize)}</td>
             <td>{new Date(file.createdAt).toLocaleDateString()}</td>
             <td>

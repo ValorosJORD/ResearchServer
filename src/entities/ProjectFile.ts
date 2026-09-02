@@ -11,6 +11,7 @@ import {
 } from 'typeorm';
 import { v7 as uuidv7 } from 'uuid';
 import { FileEncryptionMeta } from '../services/FileEncryption.js';
+import { ClassificationResult } from '../services/MalwareClassifier.js';
 import { Project } from './Project.js';
 
 @Entity()
@@ -42,6 +43,14 @@ export class ProjectFile {
   // fallback). Every new upload always populates this.
   @Column({ type: 'jsonb', nullable: true })
   encryption: FileEncryptionMeta | null;
+
+  // Nullable for the same reason as `encryption` above: rows created
+  // before this feature existed (and any future upload types that aren't
+  // classified) have no result here. Every NEW .dex/.apk upload always
+  // populates this — classification failure rejects the upload outright
+  // rather than creating a row with a null result.
+  @Column({ type: 'jsonb', nullable: true })
+  classification: ClassificationResult | null;
 
   @CreateDateColumn()
   createdAt: Date;

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import fs from 'fs/promises';
+import os from 'os';
 import path from 'path';
 import { v7 as uuidv7 } from 'uuid';
 import {
@@ -13,6 +14,7 @@ import {
 } from '../models/ProjectModel.js';
 import { getUserByEmail, getUserById } from '../models/UserModel.js';
 import { encryptFile } from '../services/FileEncryption.js';
+import { ClassificationError, classifyFile } from '../services/MalwareClassifier.js';
 import { PROJECT_DIR, UPLOAD_ROOT } from '../uploadConfig.js';
 import { parseDatabaseError } from '../utils/db-utils.js';
 import {
@@ -186,31 +188,57 @@ export async function ProjectFileUpload(req: Request, res: Response): Promise<vo
     return;
   }
 
-  // Only past this point do we actually encrypt anything and write to
-  // disk — every rejection above happens with zero filesystem writes.
+  // Only past this point do we actually classify/encrypt anything and
+  // write to disk — every rejection above happens with zero filesystem
+  // or subprocess work done.
   const writtenPaths: string[] = [];
+  const tempClassifyPaths: string[] = [];
 
   try {
-    const fileInputs = await Promise.all(
-      files.map(async (file) => {
-        const { ciphertext, meta } = encryptFile(file.buffer);
+    const fileInputs = [];
 
-        const ext = path.extname(file.originalname).toLowerCase();
-        const diskFilename = `${uuidv7()}${ext}`;
-        const absolutePath = path.join(PROJECT_DIR, diskFilename);
+    // Sequential, not Promise.all — each file spins up a JVM (baksmali)
+    // plus a 5-fold CNN inference pass. Running several of those at once
+    // risks starving a modest droplet's CPU/memory, especially since the
+    // whole request is already synchronous and blocking on this.
+    for (const file of files) {
+      const ext = path.extname(file.originalname).toLowerCase();
 
-        await fs.writeFile(absolutePath, ciphertext);
-        writtenPaths.push(absolutePath);
+      // classify_dex.py decides .apk-vs-.dex handling from this path's
+      // own extension, so the temp file must keep the original extension.
+      const tempClassifyPath = path.join(os.tmpdir(), `${uuidv7()}${ext}`);
+      await fs.writeFile(tempClassifyPath, file.buffer);
+      tempClassifyPaths.push(tempClassifyPath);
 
-        return {
-          filePath: path.relative(UPLOAD_ROOT, absolutePath),
-          fileSize: file.size,
-          originalName: file.originalname,
-          mimeType: file.mimetype,
-          encryption: meta,
-        };
-      }),
-    );
+      let classification;
+      try {
+        classification = await classifyFile(tempClassifyPath);
+      } catch (err) {
+        // Reject the whole request rather than storing a file with no
+        // meaningful result — the point of this app is the prediction,
+        // not generic storage. Clean up anything already written by
+        // earlier files in this same batch before bailing out.
+        await cleanupWrittenFiles(writtenPaths);
+        const message = err instanceof ClassificationError ? err.message : 'Classification failed';
+        res.status(422).json({ error: `${file.originalname}: ${message}` });
+        return;
+      }
+
+      const { ciphertext, meta } = encryptFile(file.buffer);
+      const diskFilename = `${uuidv7()}${ext}`;
+      const absolutePath = path.join(PROJECT_DIR, diskFilename);
+      await fs.writeFile(absolutePath, ciphertext);
+      writtenPaths.push(absolutePath);
+
+      fileInputs.push({
+        filePath: path.relative(UPLOAD_ROOT, absolutePath),
+        fileSize: file.size,
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        encryption: meta,
+        classification,
+      });
+    }
 
     const uploadResults = await addFilesToProject(projectId, fileInputs);
 
@@ -230,6 +258,8 @@ export async function ProjectFileUpload(req: Request, res: Response): Promise<vo
     // the DB or none did.
     await cleanupWrittenFiles(writtenPaths);
     res.sendStatus(500);
+  } finally {
+    await cleanupWrittenFiles(tempClassifyPaths);
   }
 }
 

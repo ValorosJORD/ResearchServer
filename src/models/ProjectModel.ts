@@ -3,6 +3,7 @@ import { Project } from '../entities/Project.js';
 import { ProjectFile } from '../entities/ProjectFile.js';
 import { User } from '../entities/User.js';
 import { FileEncryptionMeta } from '../services/FileEncryption.js';
+import { ClassificationResult } from '../services/MalwareClassifier.js';
 
 const projectRepository = AppDataSource.getRepository(Project);
 const projectFileRepository = AppDataSource.getRepository(ProjectFile);
@@ -60,6 +61,7 @@ interface NewProjectFileInput {
   originalName: string;
   mimeType: string;
   encryption: FileEncryptionMeta;
+  classification: ClassificationResult;
 }
 
 /**
@@ -87,6 +89,7 @@ export async function addFilesToProject(
       projectFile.originalName = f.originalName;
       projectFile.mimeType = f.mimeType;
       projectFile.encryption = f.encryption;
+      projectFile.classification = f.classification;
       return projectFile;
     });
 
