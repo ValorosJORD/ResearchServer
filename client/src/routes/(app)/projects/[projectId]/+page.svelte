@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { api } from '$lib/api'; // adjust to wherever your api client actually lives
+  import { page } from '$app/stores';
+  import { api } from '$lib/api';
+  // adjust to wherever your api client actually lives
   import FileUpload from '$lib/components/FileUpload.svelte';
-  import Modal from '$lib/Modal.svelte'; // adjust to wherever your modal component lives
+  import Modal from '$lib/components/Modal.svelte';
+  // adjust to wherever your modal component lives
   import { toast } from '$lib/toast.svelte';
   import { formatBytes, uploadFiles, type UploadError } from '$lib/upload';
 
@@ -186,7 +188,7 @@
 
     addingMember = true;
     const res = await api.post<ErrorBody>(`/projects/${projectId}/users`, {
-      email: newMemberEmail
+      email: newMemberEmail,
     });
     addingMember = false;
 
