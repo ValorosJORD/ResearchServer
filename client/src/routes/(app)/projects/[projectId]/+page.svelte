@@ -1,11 +1,9 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { api } from '$lib/api';
-  // adjust to wherever your api client actually lives
+  import { goto } from '$app/navigation';
+  import { api } from '$lib/api'; // adjust to wherever your api client actually lives
   import FileUpload from '$lib/components/FileUpload.svelte';
-  import Modal from '$lib/components/Modal.svelte';
-  // adjust to wherever your modal component lives
+  import Modal from '$lib/Modal.svelte'; // adjust to wherever your modal component lives
   import { toast } from '$lib/toast.svelte';
   import { formatBytes, uploadFiles, type UploadError } from '$lib/upload';
 
@@ -188,7 +186,7 @@
 
     addingMember = true;
     const res = await api.post<ErrorBody>(`/projects/${projectId}/users`, {
-      email: newMemberEmail,
+      email: newMemberEmail
     });
     addingMember = false;
 
@@ -251,41 +249,45 @@
   {:else if projectFiles.length === 0}
     <p><em>No files uploaded yet.</em></p>
   {:else}
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">Name</th>
-          <th scope="col">Classification</th>
-          <th scope="col">Size</th>
-          <th scope="col">Uploaded</th>
-          <th scope="col">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each projectFiles as file (file.fileId)}
+    <div class="table-scroll">
+      <table>
+        <thead>
           <tr>
-            <td>{file.originalName}</td>
-            <td>
-              {#if file.classification}
-                <strong>{file.classification.predictedLabel}</strong>
-                <br />
-                <small>{(file.classification.confidence * 100).toFixed(1)}% confidence</small>
-              {:else}
-                <small><em>Not classified (uploaded before this feature)</em></small>
-              {/if}
-            </td>
-            <td>{formatBytes(file.fileSize)}</td>
-            <td>{new Date(file.createdAt).toLocaleDateString()}</td>
-            <td>
-              <a href={`/api/files/${file.fileId}`} download={file.originalName}>Download</a>
-              <button type="button" class="secondary" onclick={() => promptDelete(file)}>
-                Delete
-              </button>
-            </td>
+            <th scope="col">Name</th>
+            <th scope="col">Classification</th>
+            <th scope="col">Size</th>
+            <th scope="col">Uploaded</th>
+            <th scope="col">Actions</th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {#each projectFiles as file (file.fileId)}
+            <tr>
+              <td class="file-name" title={file.originalName}>{file.originalName}</td>
+              <td>
+                {#if file.classification}
+                  <strong>{file.classification.predictedLabel}</strong>
+                  <br />
+                  <small>{(file.classification.confidence * 100).toFixed(1)}% confidence</small>
+                {:else}
+                  <small><em>Not classified (uploaded before this feature)</em></small>
+                {/if}
+              </td>
+              <td>{formatBytes(file.fileSize)}</td>
+              <td>{new Date(file.createdAt).toLocaleDateString()}</td>
+              <td>
+                <div class="actions">
+                  <a href={`/api/files/${file.fileId}`} download={file.originalName}>Download</a>
+                  <button type="button" class="secondary" onclick={() => promptDelete(file)}>
+                    Delete
+                  </button>
+                </div>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 </section>
 
@@ -302,3 +304,35 @@
     </button>
   </footer>
 </Modal>
+
+<style>
+  /* Contains any horizontal overflow to just the table itself, rather
+     than the whole page needing to scroll sideways to reach anything. */
+  .table-scroll {
+    overflow-x: auto;
+  }
+
+  /* Long filenames (hash-based Android sample names especially) no
+     longer stretch the table wider than the viewport — truncated with
+     an ellipsis, full name still available on hover via the title attr. */
+  .file-name {
+    max-width: 20rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Stacked instead of side-by-side so the Actions column stays narrow
+     regardless of how long "Download"/"Delete" render at any zoom level. */
+  .actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+  }
+
+  .actions button {
+    margin: 0;
+    padding: 0.25rem 0.75rem;
+  }
+</style>
