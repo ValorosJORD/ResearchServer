@@ -80,7 +80,13 @@ NUM_FEATURES = 1000       # confirmed from the model's InputLayer: batch_shape (
 # to the old joblib bundle's LabelEncoder -- Keras only knows the output
 # layer is 5-wide, not what each index means. This order MUST match
 # whatever order the labels were in during training.
-CLASS_LABELS = ["Benign", "SMS", "Banking", "Riskware", "Adware"]
+#
+# Corrected 2026 -- the originally-assumed order ("Benign", "SMS",
+# "Banking", "Riskware", "Adware") was producing mismatched predictions
+# in testing: what it called Riskware was actually Banking, Adware was
+# actually Riskware, Banking was actually SMS, and SMS was actually
+# Adware. This order reflects that correction.
+CLASS_LABELS = ["Benign", "Adware", "SMS", "Banking", "Riskware"]
 
 # --- TEMPORARY: hardcoded paths for quick manual testing ---------
 # Only used if you run `python classify_dex.py` with no --dex flag at all.
