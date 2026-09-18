@@ -20,21 +20,16 @@ entirely in memory -- no intermediate files written to disk):
 ------------------------------------------------------------------------------
 IMPORTANT ONE-TIME SETUP
 ------------------------------------------------------------------------------
-Two things the model itself doesn't carry, and only need doing once:
+The .h5 model itself carries no column order or fitted scaler -- both come
+from your training feature CSV (e.g. importance_1000.csv: 1000 five-gram
+columns + a trailing `label` column). Run this once:
 
-1. The 1000 trained column names/order -- only exists as the header row of
-   fiveGram_matrix_top1000.csv. Run:
+    python classify_dex.py --fit-scaler "D:\\importance_1000.csv" \\
+                            --scaler-out "D:\\scaler.joblib" \\
+                            --fit-scaler-columns-out "D:\\top1000_columns.json"
 
-    python classify_dex.py --extract-columns "D:\\fiveGram_matrix_top1000.csv" \\
-                            --columns-out "D:\\top1000_columns.json"
-
-2. The fitted StandardScaler -- fit once on your training feature CSV
-   (same layout: features in every column except the last, which is the
-   label) and reused at inference time rather than re-fit on every single
-   classification:
-
-    python classify_dex.py --fit-scaler "D:\\training_features.csv" \\
-                            --scaler-out "D:\\scaler.joblib"
+(The old --extract-columns flag is still here for the previous model's
+fiveGram_matrix_top1000.csv format, but isn't what you want for this one.)
 
 After that, normal usage is just:
 
@@ -256,30 +251,45 @@ def extract_columns_from_top1000_csv(csv_path: str, out_json_path: str) -> None:
 
 
 # ------------------------------------------------------------------
-# 7. one-time setup: fit + save the StandardScaler
+# 7. one-time setup: fit + save the StandardScaler, AND extract the
+#    matching column order, from the same training CSV
 # ------------------------------------------------------------------
-def fit_and_save_scaler(training_csv_path: str, scaler_out_path: str) -> None:
+def fit_and_save_scaler(training_csv_path: str, scaler_out_path: str, columns_out_path: str) -> None:
     """
-    One-time setup, analogous to --extract-columns above. Fits a
-    StandardScaler on your training feature CSV (same layout as
-    fiveGram_matrix_top1000.csv: every column except the last, which is
-    the label) and saves the FITTED scaler for reuse at inference time.
+    One-time setup for the new model. Reads a training feature CSV (e.g.
+    importance_1000.csv: 1000 five-gram feature columns + a trailing
+    `label` column, no `file` identifier column -- NOT the same layout as
+    the old fiveGram_matrix_top1000.csv / --extract-columns) and:
 
-    Deliberately NOT re-fit on every classification call: this app scores
-    one file per live web upload, and a fresh fit-on-the-whole-training-set
-    every time would be slow, non-cached, and require shipping the
-    training CSV to the server as an extra asset for no benefit -- the
-    fitted mean/scale are deterministic, so fit once and reuse.
+      1. Fits + saves a StandardScaler on the feature columns.
+      2. Saves those same columns' names, in the same order, to
+         top1000_columns.json.
+
+    Doing both from the SAME file in the SAME read guarantees the
+    scaler's fitted feature order and reduce_to_top1000()'s column order
+    can never drift apart from each other.
+
+    IMPORTANT: this CSV's column headers use space-separated five-grams
+    ("16 6e 22 70 6e"), but the rest of the pipeline -- build_fivegrams()
+    and integrate_file.txt -- uses comma-separated ("16,6e,22,70,6e").
+    Without converting, every lookup in reduce_to_top1000() would silently
+    miss and the model would score an all-zero feature vector every time,
+    with no error to show for it. This function does that conversion.
     """
     df = pd.read_csv(training_csv_path)
     df = df.fillna(0)
-    X = df.iloc[:, :-1].values  # everything except the last (label) column
+
+    feature_columns = [col.replace(" ", ",") for col in df.columns[:-1]]  # space -> comma
+    X = df.iloc[:, :-1].values
 
     scaler = StandardScaler()
     scaler.fit(X)
-
     joblib.dump(scaler, scaler_out_path)
     print(f"[INFO] Fit StandardScaler on {X.shape[0]} rows, {X.shape[1]} features -> {scaler_out_path}")
+
+    with open(columns_out_path, "w", encoding="utf-8") as f:
+        json.dump(feature_columns, f)
+    print(f"[INFO] Saved {len(feature_columns)} column names (comma-format) -> {columns_out_path}")
 
 
 # ------------------------------------------------------------------
@@ -410,9 +420,12 @@ def main():
     parser.add_argument("--columns-out", metavar="OUT_JSON", default=TOP1000_COLUMNS_FILE,
                          help="Where to write the extracted column list (used with --extract-columns)")
     parser.add_argument("--fit-scaler", metavar="TRAINING_CSV",
-                         help="One-time: fit a StandardScaler on this training feature CSV and save it")
+                         help="One-time: fit a StandardScaler AND extract the matching column "
+                              "order from this training feature CSV (e.g. importance_1000.csv)")
     parser.add_argument("--scaler-out", metavar="OUT_JOBLIB", default=SCALER_PATH,
                          help="Where to write the fitted scaler (used with --fit-scaler)")
+    parser.add_argument("--fit-scaler-columns-out", metavar="OUT_JSON", default=TOP1000_COLUMNS_FILE,
+                         help="Where to write the matching column list (used with --fit-scaler)")
 
     args = parser.parse_args()
 
@@ -421,7 +434,7 @@ def main():
         return
 
     if args.fit_scaler:
-        fit_and_save_scaler(args.fit_scaler, args.scaler_out)
+        fit_and_save_scaler(args.fit_scaler, args.scaler_out, args.fit_scaler_columns_out)
         return
 
     if not args.dex:
