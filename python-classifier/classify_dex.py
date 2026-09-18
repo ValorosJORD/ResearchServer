@@ -11,20 +11,30 @@ entirely in memory -- no intermediate files written to disk):
   5. FrequencyCSV.cpp   equivalent -> look those up against the 10,000-column
                                       "integrated" reference (integrate_file.txt)
   6. featureImportance.py equiv.   -> reduce to the trained model's 1000 columns
-  7. CNN_for_Malware_Data.py equiv.-> run the 5-fold CNN ensemble, print
-                                      predicted family + confidence
+  7. Keras CNN (best_model.h5)     -> scale + predict, print predicted family
+                                      + confidence. Class order: see
+                                      CLASS_LABELS below -- it MUST match
+                                      training order, since the .h5 file
+                                      itself has no label names stored.
 
 ------------------------------------------------------------------------------
 IMPORTANT ONE-TIME SETUP
 ------------------------------------------------------------------------------
-Your saved model (cnn_family_model.joblib) does NOT store which 1000 five-gram
-columns it was trained on, or their order -- the StandardScalers were fit on a
-plain numpy array, not a DataFrame, so `feature_names_in_` is empty. That
-column list only exists as the header row of the CSV that featureImportance.py
-produced (fiveGram_matrix_top1000.csv). Run this once to capture it:
+Two things the model itself doesn't carry, and only need doing once:
+
+1. The 1000 trained column names/order -- only exists as the header row of
+   fiveGram_matrix_top1000.csv. Run:
 
     python classify_dex.py --extract-columns "D:\\fiveGram_matrix_top1000.csv" \\
                             --columns-out "D:\\top1000_columns.json"
+
+2. The fitted StandardScaler -- fit once on your training feature CSV
+   (same layout: features in every column except the last, which is the
+   label) and reused at inference time rather than re-fit on every single
+   classification:
+
+    python classify_dex.py --fit-scaler "D:\\training_features.csv" \\
+                            --scaler-out "D:\\scaler.joblib"
 
 After that, normal usage is just:
 
@@ -43,10 +53,15 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
+# Quiets TensorFlow's default startup noise (CPU optimization notices etc.)
+# on stdout/stderr -- purely cosmetic, doesn't affect anything functional.
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 import numpy as np
+import pandas as pd
 import joblib
-import torch
-import torch.nn as nn
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.models import load_model
 
 # ------------------------------------------------------------------
 # CONFIG -- read from environment variables in production (set by the
@@ -60,9 +75,17 @@ INTEGRATED_FIVEGRAMS_FILE = os.environ.get(
 TOP1000_COLUMNS_FILE = os.environ.get(
     "TOP1000_COLUMNS_FILE", r"D:\top1000_columns.json"
 )  # produced by --extract-columns (see module docstring above)
-MODEL_BUNDLE_PATH = os.environ.get("MODEL_BUNDLE_PATH", r"D:\cnn_family_model.joblib")
+MODEL_BUNDLE_PATH = os.environ.get("MODEL_BUNDLE_PATH", r"D:\best_model.h5")
+SCALER_PATH = os.environ.get("SCALER_PATH", r"D:\scaler.joblib")  # produced by --fit-scaler
 
 TOP_N_PER_FILE = 50_000   # matches NGramToFrequency.cpp's topN
+NUM_FEATURES = 1000       # confirmed from the model's InputLayer: batch_shape (None, 1000, 1)
+
+# Fixed index -> class name mapping. The Keras .h5 model has no equivalent
+# to the old joblib bundle's LabelEncoder -- Keras only knows the output
+# layer is 5-wide, not what each index means. This order MUST match
+# whatever order the labels were in during training.
+CLASS_LABELS = ["Benign", "SMS", "Banking", "Riskware", "Adware"]
 
 # --- TEMPORARY: hardcoded paths for quick manual testing ---------
 # Only used if you run `python classify_dex.py` with no --dex flag at all.
@@ -233,82 +256,70 @@ def extract_columns_from_top1000_csv(csv_path: str, out_json_path: str) -> None:
 
 
 # ------------------------------------------------------------------
-# 7. CNN ensemble inference (CNN_for_Malware_Data.py equivalent)
+# 7. one-time setup: fit + save the StandardScaler
 # ------------------------------------------------------------------
-class CNN1D_Classifier(nn.Module):
-    """Must match CNN_for_Malware_Data.py exactly -- this is what the
-    saved state_dicts were trained against."""
+def fit_and_save_scaler(training_csv_path: str, scaler_out_path: str) -> None:
+    """
+    One-time setup, analogous to --extract-columns above. Fits a
+    StandardScaler on your training feature CSV (same layout as
+    fiveGram_matrix_top1000.csv: every column except the last, which is
+    the label) and saves the FITTED scaler for reuse at inference time.
 
-    def __init__(self, num_features: int, num_classes: int):
-        super().__init__()
-        self.conv_block = nn.Sequential(
-            nn.Conv1d(1, 16, kernel_size=5, padding=2),
-            nn.BatchNorm1d(16),
-            nn.ReLU(),
-            nn.MaxPool1d(kernel_size=2),
-            nn.Conv1d(16, 32, kernel_size=5, padding=2),
-            nn.BatchNorm1d(32),
-            nn.ReLU(),
-            nn.MaxPool1d(kernel_size=2),
-        )
-        pooled_length = num_features // 4
-        flattened_size = 32 * pooled_length
-        self.fc_block = nn.Sequential(
-            nn.Linear(flattened_size, 128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, num_classes),
-        )
+    Deliberately NOT re-fit on every classification call: this app scores
+    one file per live web upload, and a fresh fit-on-the-whole-training-set
+    every time would be slow, non-cached, and require shipping the
+    training CSV to the server as an extra asset for no benefit -- the
+    fitted mean/scale are deterministic, so fit once and reuse.
+    """
+    df = pd.read_csv(training_csv_path)
+    df = df.fillna(0)
+    X = df.iloc[:, :-1].values  # everything except the last (label) column
 
-    def forward(self, x):
-        x = self.conv_block(x)
-        x = x.view(x.size(0), -1)
-        return self.fc_block(x)
+    scaler = StandardScaler()
+    scaler.fit(X)
+
+    joblib.dump(scaler, scaler_out_path)
+    print(f"[INFO] Fit StandardScaler on {X.shape[0]} rows, {X.shape[1]} features -> {scaler_out_path}")
 
 
-def classify_feature_vector(feature_vector: np.ndarray, model_bundle_path: str = MODEL_BUNDLE_PATH):
-    """Loads the 5-fold ensemble bundle and scores ONE sample, averaging
-    softmax probabilities across folds -- same logic as step 9 of
-    CNN_for_Malware_Data.py, just for a single row instead of a test set."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    bundle = joblib.load(model_bundle_path)
-
-    config = bundle["model_config"]
-    label_encoder = bundle["label_encoder"]
-    scalers = bundle["fold_scalers"]
-    state_dicts = bundle["fold_state_dicts"]
-
-    if feature_vector.shape[0] != config["num_features"]:
+# ------------------------------------------------------------------
+# 8. Keras model inference
+# ------------------------------------------------------------------
+def classify_feature_vector(
+    feature_vector: np.ndarray,
+    model_path: str = MODEL_BUNDLE_PATH,
+    scaler_path: str = SCALER_PATH,
+):
+    """Loads the trained Keras model + its saved StandardScaler and scores
+    ONE sample. Model expects (batch, 1000, 1) input and outputs a 5-way
+    softmax -- see CLASS_LABELS above for the index -> name mapping."""
+    if feature_vector.shape[0] != NUM_FEATURES:
         raise ValueError(
             f"Feature vector has {feature_vector.shape[0]} values but the "
-            f"model expects {config['num_features']}. Your top1000 columns "
-            f"file likely doesn't match what the model was trained on."
+            f"model expects {NUM_FEATURES}. Your top1000 columns file "
+            f"likely doesn't match what the model was trained on."
         )
 
-    x_row = feature_vector.reshape(1, -1)
-    probs_sum = np.zeros((1, config["num_classes"]), dtype=np.float32)
+    scaler = joblib.load(scaler_path)
+    model = load_model(model_path)
 
-    for state_dict, scaler in zip(state_dicts, scalers):
-        model = CNN1D_Classifier(config["num_features"], config["num_classes"]).to(device)
-        model.load_state_dict(state_dict)
-        model.eval()
+    x_row = feature_vector.reshape(1, -1)                # (1, 1000)
+    x_scaled = scaler.transform(x_row)                    # (1, 1000)
+    x_input = x_scaled.reshape(-1, NUM_FEATURES, 1)        # (1, 1000, 1) -- matches training
 
-        x_scaled = scaler.transform(x_row).astype(np.float32)
-        x_tensor = torch.tensor(x_scaled, dtype=torch.float32).unsqueeze(1).to(device)  # (1, 1, num_features)
+    probs = model.predict(x_input, verbose=0)[0]           # softmax output, already probabilities
 
-        with torch.no_grad():
-            logits = model(x_tensor)
-            probs = torch.softmax(logits, dim=1).cpu().numpy()
-        probs_sum += probs
+    if len(probs) != len(CLASS_LABELS):
+        raise ValueError(
+            f"Model outputs {len(probs)} classes but CLASS_LABELS has "
+            f"{len(CLASS_LABELS)} entries -- update CLASS_LABELS to match."
+        )
 
-    probs_avg = probs_sum / len(state_dicts)
-    pred_idx = int(np.argmax(probs_avg, axis=1)[0])
-    pred_label = label_encoder.inverse_transform([pred_idx])[0]
-    confidence = float(probs_avg[0, pred_idx])
+    pred_idx = int(np.argmax(probs))
+    pred_label = CLASS_LABELS[pred_idx]
+    confidence = float(probs[pred_idx])
+    per_class = {cls: float(p) for cls, p in zip(CLASS_LABELS, probs)}
 
-    per_class = {
-        cls: float(p) for cls, p in zip(label_encoder.classes_, probs_avg[0])
-    }
     return pred_label, confidence, per_class
 
 
@@ -320,7 +331,8 @@ def classify_dex_file(
     baksmali_jar: str = BAKSMALI_JAR,
     integrated_columns_path: str = INTEGRATED_FIVEGRAMS_FILE,
     top1000_columns_path: str = TOP1000_COLUMNS_FILE,
-    model_bundle_path: str = MODEL_BUNDLE_PATH,
+    model_path: str = MODEL_BUNDLE_PATH,
+    scaler_path: str = SCALER_PATH,
 ):
     extracted_dex_path = None
     try:
@@ -353,8 +365,8 @@ def classify_dex_file(
         top1000_columns = load_top1000_columns(top1000_columns_path)
         feature_vector = reduce_to_top1000(full_row, top1000_columns)
 
-        print("[6/6] Running 5-fold CNN ensemble ...")
-        pred_label, confidence, per_class = classify_feature_vector(feature_vector, model_bundle_path)
+        print("[6/6] Running Keras model ...")
+        pred_label, confidence, per_class = classify_feature_vector(feature_vector, model_path, scaler_path)
 
         print("\n================ RESULT ================")
         print(f"File:        {dex_path}")
@@ -384,6 +396,7 @@ def main():
     parser.add_argument("--integrated-columns", default=INTEGRATED_FIVEGRAMS_FILE)
     parser.add_argument("--top1000-columns", default=TOP1000_COLUMNS_FILE)
     parser.add_argument("--model", default=MODEL_BUNDLE_PATH)
+    parser.add_argument("--scaler", default=SCALER_PATH)
     parser.add_argument(
         "--output-json",
         metavar="RESULT_JSON",
@@ -391,11 +404,15 @@ def main():
              "Used by the Node service instead of parsing stdout.",
     )
 
-    # one-time setup helper
+    # one-time setup helpers
     parser.add_argument("--extract-columns", metavar="TOP1000_CSV",
                          help="One-time: extract the ordered column list from fiveGram_matrix_top1000.csv")
     parser.add_argument("--columns-out", metavar="OUT_JSON", default=TOP1000_COLUMNS_FILE,
                          help="Where to write the extracted column list (used with --extract-columns)")
+    parser.add_argument("--fit-scaler", metavar="TRAINING_CSV",
+                         help="One-time: fit a StandardScaler on this training feature CSV and save it")
+    parser.add_argument("--scaler-out", metavar="OUT_JOBLIB", default=SCALER_PATH,
+                         help="Where to write the fitted scaler (used with --fit-scaler)")
 
     args = parser.parse_args()
 
@@ -403,8 +420,12 @@ def main():
         extract_columns_from_top1000_csv(args.extract_columns, args.columns_out)
         return
 
+    if args.fit_scaler:
+        fit_and_save_scaler(args.fit_scaler, args.scaler_out)
+        return
+
     if not args.dex:
-        parser.error("--dex is required unless you're running --extract-columns")
+        parser.error("--dex is required unless you're running --extract-columns or --fit-scaler")
 
     try:
         pred_label, confidence, per_class = classify_dex_file(
@@ -412,7 +433,8 @@ def main():
             baksmali_jar=args.baksmali_jar,
             integrated_columns_path=args.integrated_columns,
             top1000_columns_path=args.top1000_columns,
-            model_bundle_path=args.model,
+            model_path=args.model,
+            scaler_path=args.scaler,
         )
     except Exception as exc:  # noqa: BLE001 -- deliberately broad: any failure
         # here needs to become a structured error the caller can act on,
