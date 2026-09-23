@@ -365,6 +365,21 @@ def classify_dex_file(
         opcodes = extract_opcodes(dump_text)
         print(f"      {len(opcodes)} opcodes extracted")
 
+        # A file that yields almost no opcodes (corrupted dex, unexpected
+        # baksmali output format, some genuinely degenerate edge case)
+        # would otherwise flow straight through to an all-zero feature
+        # vector -- and the model will still confidently predict SOMETHING
+        # for that, indistinguishable from a real result. Fail loudly here
+        # instead of silently returning a meaningless-but-confident answer.
+        MIN_OPCODES = 5  # can't even form one five-gram below this
+        if len(opcodes) < MIN_OPCODES:
+            raise ValueError(
+                f"Only {len(opcodes)} opcodes extracted from {dex_path} -- "
+                "too few to classify. This usually means baksmali's output "
+                "format didn't match what extract_opcodes() expects, or the "
+                "file is corrupted/not a real dex."
+            )
+
         print("[3/6] Building five-grams ...")
         fivegrams = build_fivegrams(opcodes)
         print(f"      {len(fivegrams)} five-gram instances")
@@ -380,6 +395,22 @@ def classify_dex_file(
         print("[5/6] Reducing to the model's trained 1000 columns ...")
         top1000_columns = load_top1000_columns(top1000_columns_path)
         feature_vector = reduce_to_top1000(full_row, top1000_columns)
+
+        # If literally none of this file's five-grams matched anything in
+        # the 10k/1k reference sets, something's wrong (bad column file,
+        # opcode-extraction mismatch, etc.) -- a real sample, benign or
+        # malicious, should virtually always share SOME five-grams with a
+        # reference built from real training data. Same reasoning as the
+        # opcode-count check above: refuse to score it rather than return
+        # a confident-looking answer for a meaningless input.
+        if not np.any(feature_vector):
+            raise ValueError(
+                "Feature vector is entirely zero -- none of this file's "
+                "five-grams matched the reference columns. Check that "
+                "TOP1000_COLUMNS_FILE and INTEGRATED_FIVEGRAMS_FILE actually "
+                "correspond to this model, and that the comma-vs-space "
+                "column-name format lines up (see fit_and_save_scaler)."
+            )
 
         print("[6/6] Running Keras model ...")
         pred_label, confidence, per_class = classify_feature_vector(feature_vector, model_path, scaler_path)
